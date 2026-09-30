@@ -1,0 +1,37 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:txswitch;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+  kafka:
+    bootstrap-servers: ${spring.embedded.kafka.brokers:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+    consumer:
+      group-id: transaction-audit
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.paymentswitch.model
+
+app:
+  kafka:
+    topic: transaction-events
+    partitions: 3
+  jwt:
+    secret: test-secret-test-secret-test-secret-0123
+    expiration-minutes: 5
+  rate-limit:
+    capacity: 50
+    refill-per-second: 50
+  risk:
+    max-amount: 10000.00
+  seed-demo-users: true

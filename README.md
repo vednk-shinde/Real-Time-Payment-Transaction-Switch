@@ -109,13 +109,43 @@ curl http://localhost:8080/api/transactions/<id> -H "Authorization: Bearer <toke
 
 Resubmitting the same `idempotencyKey` returns `409 Conflict`. Amounts over `10000.00` are declined by the demo risk rule in `TransactionService`.
 
+**4. See its audit trail (built by the Kafka consumer)**
+
+```bash
+curl http://localhost:8080/api/transactions/<id>/events -H "Authorization: Bearer <token>"
+```
+
+## API reference
+
+| Method | Path | Roles | Result |
+|---|---|---|---|
+| `POST` | `/api/auth/login` | public | `200` `{token, tokenType, expiresInSeconds}`; `401` on bad credentials |
+| `POST` | `/api/transactions` | ADMIN, OPERATOR | `201` + `Location` for every processed transaction (approved *or* declined); `400` invalid body; `409` reused idempotency key; `429` rate limited (with `Retry-After`) |
+| `GET` | `/api/transactions/{id}` | ADMIN, OPERATOR | `200` transaction; `404` unknown id |
+| `GET` | `/api/transactions/{id}/events` | ADMIN, OPERATOR | `200` ordered state transitions as consumed from Kafka |
+| `GET` | `/api/transactions?page=0&size=20` | ADMIN | `200` paged list, newest first |
+| `GET` | `/actuator/health` | public | liveness/readiness |
+
+### Response codes
+
+| Code | Meaning | When |
+|---|---|---|
+| `00` | Approved | Valid card, routable BIN, amount within limit |
+| `14` | Invalid card number | Luhn checksum fails (declined before routing) |
+| `15` | No such issuer | BIN doesn't match any range in the routing table |
+| `61` | Exceeds amount limit | Amount > `app.risk.max-amount` (default `10000.00`) |
+
+### Routing table (BIN prefix → simulated issuer)
+
+`4` → Visa · `51–55`, `2221–2720` → Mastercard · `34`, `37` → Amex · `6011`, `65` → Discover
+
 ## Tests & quality gates
 
 ```bash
 mvn clean verify
 ```
 
-Runs the full JUnit 5 + Mockito suite (unit tests for services, `MockMvc` slice tests for controllers, and an embedded-Kafka integration test for the event producer), then generates a JaCoCo HTML report at `target/site/jacoco/index.html`.
+Runs the full JUnit 5 + Mockito suite (unit tests for services, routing, Luhn, JWT and the token bucket; `MockMvc` slice tests for controllers covering 401/403/400/404/409; and an embedded-Kafka integration test that logs in, submits transactions and waits for the audit consumer to record every state transition), then generates a JaCoCo HTML report at `target/site/jacoco/index.html`.
 
 CI (`.github/workflows/ci.yml`) runs on every push/PR to `main`: build, full test suite with coverage, optional SonarQube static analysis (when `SONAR_TOKEN` is configured as a repo secret), a Docker image build, and — on `main` — a push of that image to GitHub Container Registry.
 
@@ -142,4 +172,5 @@ This project is built to demonstrate architecture and engineering practice, not 
 - Transaction volume is exercised locally, not in production.
 - The routing/risk rules are intentionally simple and deterministic so behavior is testable.
 - The rate limiter is in-memory and scoped to a single instance.
+- Events are published to Kafka *after* the database commit (`TransactionEventRelay`), so Kafka never carries an event for a rolled-back transaction. The flip side: if the process dies between commit and publish, that event is lost from the stream. A transactional outbox table would close that gap.
 - Coverage numbers are whatever `mvn verify` reports for this codebase at any given time — check `target/site/jacoco/index.html` rather than trusting a stated percentage.
