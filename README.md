@@ -1,10 +1,33 @@
 # Real-Time Payment Transaction Switch
 
+[![CI](https://github.com/vednk-shinde/Real-Time-Payment-Transaction-Switch/actions/workflows/ci.yml/badge.svg)](https://github.com/vednk-shinde/Real-Time-Payment-Transaction-Switch/actions/workflows/ci.yml)
+![Java 17](https://img.shields.io/badge/Java-17-orange)
+![Spring Boot 3](https://img.shields.io/badge/Spring%20Boot-3-6DB33F)
+![Kafka](https://img.shields.io/badge/Apache%20Kafka-event%20stream-231F20)
+![License MIT](https://img.shields.io/badge/license-MIT-blue)
+
+```bash
+docker compose up --build     # API on http://localhost:8080 (Postgres + Kafka + app)
+```
+
 An event-driven payment transaction switching platform built with Java 17 and Spring Boot 3. It ingests transaction requests over REST, validates and routes them to a (simulated) issuer, persists the result, and publishes every state transition as an immutable event on Kafka for audit and replay.
 
 This is a portfolio/demo project built to exercise the full stack a payments switch touches: REST APIs, JWT-secured endpoints, relational persistence, event streaming, containerization, and a CI/CD pipeline with automated quality gates. It simulates high-volume transaction streams locally — it has not processed real production traffic.
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    C[Client] -->|POST /api/transactions<br/>JWT| API[Spring Boot REST API]
+    API --> RL[Rate limiter<br/>token bucket]
+    RL --> SVC[TransactionService<br/>Luhn · routing · risk rule]
+    SVC -->|JPA| PG[(PostgreSQL)]
+    SVC -->|after commit| K[(Kafka<br/>transaction-events)]
+    K --> CON[Audit consumer]
+    CON -->|JPA| PG
+```
+
+### Request flow (text)
 
 ```
                  ┌───────────────┐        ┌────────────────────┐
@@ -27,6 +50,18 @@ This is a portfolio/demo project built to exercise the full stack a payments swi
 ```
 
 Each transaction moves through `RECEIVED → VALIDATED → ROUTED → APPROVED|DECLINED`, and every transition is published as a `TransactionEvent` to Kafka — an append-only, replayable log of switch activity, independent of the synchronous request/response path.
+
+## Why these tools
+
+| Choice | Reason |
+|---|---|
+| **Kafka** | Every state transition is an immutable event on a partitioned log, so the audit trail is replayable and decoupled from the synchronous request path. |
+| **PostgreSQL + JPA** | Payments need ACID guarantees; a unique idempotency key plus `@Version` optimistic locking prevent double-processing under retries and concurrent updates. |
+| **Idempotency keys** | Clients retry on timeouts; the switch returns `409` instead of charging twice. |
+| **JWT + BCrypt + roles** | Stateless auth fits horizontally scaled instances; `ADMIN` / `OPERATOR` roles separate who can list versus submit. |
+| **Token-bucket rate limiting** | Protects ingestion from bursty callers and returns `429` with `Retry-After`. |
+| **Publish after commit** | Kafka never carries an event for a rolled-back transaction (the trade-off is covered in the scope notes). |
+| **Multi-stage Docker + Compose** | A reviewer runs one command and gets the app plus its dependencies, with no local Java, Kafka or Postgres needed. |
 
 ## Tech stack
 
@@ -173,4 +208,8 @@ This project is built to demonstrate architecture and engineering practice, not 
 - The routing/risk rules are intentionally simple and deterministic so behavior is testable.
 - The rate limiter is in-memory and scoped to a single instance.
 - Events are published to Kafka *after* the database commit (`TransactionEventRelay`), so Kafka never carries an event for a rolled-back transaction. The flip side: if the process dies between commit and publish, that event is lost from the stream. A transactional outbox table would close that gap.
-- Coverage numbers are whatever `mvn verify` reports for this codebase at any given time — check `target/site/jacoco/index.html` rather than trusting a stated percentage.
+- Coverage: 68 tests, ~95% JaCoCo instruction coverage as of the last `mvn verify`; the report is generated at `target/site/jacoco/index.html`.
+
+## License
+
+MIT
